@@ -1,14 +1,36 @@
 import os
 from enum import Enum
+from typing import Callable, Optional
 import boto3
 import time
 import requests
+from mcstatus import MinecraftBedrockServer
+from mcstatus.bedrock_status import BedrockStatusResponse
 
 is_dry_run = False
 
 
 class Action(Enum):
     START_MINECRAFT_SERVER = 'start_minecraft_server'
+
+
+def wait_until(condition: Callable[[], bool], delay, timeout):
+    start_time = time.time()
+    while not condition():
+        if time.time() - start_time >= timeout:
+            raise TimeoutError('Timeout reached')
+        time.sleep(delay)
+
+
+def get_minecraft_server_status() -> Optional[BedrockStatusResponse]:
+    hostname = os.environ.get('MINECRAFT_SERVER_HOSTNAME')
+    port = os.environ.get('MINECRAFT_SERVER_PORT')
+
+    server = MinecraftBedrockServer(hostname, int(port))
+    try:
+        return server.status(1)
+    except:
+        return None
 
 
 def send_message(event, message: str):
@@ -19,26 +41,33 @@ def send_message(event, message: str):
     application_id = event['discord_interaction']['application_id']
 
     url = f"https://discord.com/api/webhooks/{application_id}/{interaction_token}"
-    response = requests.post(url, json={'content': message})
-    print(response.text)
+    if not is_dry_run:
+        response = requests.post(url, json={'content': message})
+        print(response.text)
 
 
-def start_minecraft_server(event):
+def action_start_minecraft_server(event):
     region = os.environ.get('MINECRAFT_INSTANCE_REGION')
     instance_id = os.environ.get('MINECRAFT_INSTANCE_ID')
 
     ec2 = boto3.resource('ec2', region_name=region)
     instance = ec2.Instance(instance_id)
-    instance.start(DryRun=is_dry_run)
-
-    instance.wait_until_running(DryRun=is_dry_run)
-    send_message(event, 'Almost there. Waiting for Minecraft to load...')
-
-    if not is_dry_run:
-        time.sleep(2)
+    if not is_dry_run:  # Boto throws an exception if we use dryrun flag directly in methods
+        instance.start()
+        instance.wait_until_running()
 
     send_message(
-        event, 'Minecraft probably loaded. Idk... Nathan hasn\'t actually implemented the code to check yet.')
+        event, 'Almost there. I\'ve started the server. Now waiting for Minecraft to load...')
+
+    try:
+        if not is_dry_run:
+            wait_until(lambda: get_minecraft_server_status()
+                       is not None, 7, 60)
+        send_message(event, 'The Minecraft server has started. Have fun!')
+    except TimeoutError:
+        send_message(
+            event, 'Oh no :( Minecraft failed to load. I\'ll stop the server. Feel free to try again.')
+        instance.stop(DryRun=is_dry_run)
 
 
 def lambda_handler(event, context):
@@ -49,4 +78,4 @@ def lambda_handler(event, context):
 
     action = Action(event['action'])
     if action is Action.START_MINECRAFT_SERVER:
-        start_minecraft_server(event)
+        action_start_minecraft_server(event)
