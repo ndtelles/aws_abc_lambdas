@@ -39,10 +39,12 @@ def send_message(event, message: str):
 
     interaction_token = event['discord_interaction']['token']
     application_id = event['discord_interaction']['application_id']
+    ephemeral = event.get('discord_ephemeral_response', False)
 
     url = f"https://discord.com/api/webhooks/{application_id}/{interaction_token}"
     if not is_dry_run:
-        response = requests.post(url, json={'content': message})
+        response = requests.post(
+            url, json={'content': message, 'flags': 64 if ephemeral else 0})
         print(response.text)
 
 
